@@ -1,7 +1,11 @@
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Check, Crown, Sparkles } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Check, Crown, Sparkles, Loader2 } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { useAuth } from "@/lib/auth";
+import { initiatePayment } from "@/lib/razorpay";
+import { toast } from "@/hooks/use-toast";
 
 const plans = [
   {
@@ -65,6 +69,52 @@ const plans = [
 ];
 
 export function Pricing() {
+  const { user, profile, refreshProfile } = useAuth();
+  const navigate = useNavigate();
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+
+  const handlePlanClick = (plan: typeof plans[0]) => {
+    if (plan.name === "Free") {
+      navigate("/auth");
+      return;
+    }
+
+    if (!user) {
+      navigate("/auth");
+      return;
+    }
+
+    // User is logged in, initiate payment
+    setLoadingPlan(plan.name);
+    
+    const planId = plan.name.toLowerCase() as "monthly" | "lifetime";
+    
+    initiatePayment(
+      planId,
+      user.email,
+      profile?.full_name || undefined,
+      async (newPlan) => {
+        setLoadingPlan(null);
+        toast({
+          title: "Payment Successful! 🎉",
+          description: `You're now on the ${newPlan} plan. Enjoy unlimited access!`,
+        });
+        await refreshProfile();
+        navigate("/dashboard");
+      },
+      (error) => {
+        setLoadingPlan(null);
+        if (error !== "Payment cancelled") {
+          toast({
+            title: "Payment Failed",
+            description: error,
+            variant: "destructive",
+          });
+        }
+      }
+    );
+  };
+
   return (
     <section className="py-20 lg:py-32 bg-muted/30">
       <div className="container">
@@ -132,11 +182,22 @@ export function Pricing() {
               </CardContent>
 
               <CardFooter>
-                <Link to="/auth" className="w-full">
-                  <Button variant={plan.buttonVariant} className="w-full" size="lg">
-                    {plan.buttonText}
-                  </Button>
-                </Link>
+                <Button 
+                  variant={plan.buttonVariant} 
+                  className="w-full" 
+                  size="lg"
+                  disabled={loadingPlan !== null}
+                  onClick={() => handlePlanClick(plan)}
+                >
+                  {loadingPlan === plan.name ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                      Processing...
+                    </>
+                  ) : (
+                    plan.buttonText
+                  )}
+                </Button>
               </CardFooter>
             </Card>
           ))}

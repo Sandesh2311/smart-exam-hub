@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Check, Crown, Sparkles, CreditCard } from "lucide-react";
+import { Check, Crown, Sparkles, CreditCard, Loader2 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import { initiatePayment } from "@/lib/razorpay";
 
 const plans = [
   {
@@ -32,14 +34,37 @@ const plans = [
 ];
 
 export default function SubscriptionPage() {
-  const { profile, refreshProfile } = useAuth();
+  const { profile, user, refreshProfile } = useAuth();
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
 
   const handleUpgrade = async (planId: string) => {
-    // For now, show a message about Razorpay integration
-    toast({
-      title: "Coming Soon",
-      description: "Razorpay payment integration will be available soon. For now, enjoy the free tier!",
-    });
+    if (planId === "free") return;
+    
+    setLoadingPlan(planId);
+    
+    initiatePayment(
+      planId as "monthly" | "lifetime",
+      user?.email,
+      profile?.full_name || undefined,
+      async (plan) => {
+        setLoadingPlan(null);
+        toast({
+          title: "Payment Successful! 🎉",
+          description: `You're now on the ${plan} plan. Enjoy unlimited access!`,
+        });
+        await refreshProfile();
+      },
+      (error) => {
+        setLoadingPlan(null);
+        if (error !== "Payment cancelled") {
+          toast({
+            title: "Payment Failed",
+            description: error,
+            variant: "destructive",
+          });
+        }
+      }
+    );
   };
 
   const currentPlan = profile?.plan || "free";
@@ -143,10 +168,21 @@ export default function SubscriptionPage() {
                 <Button
                   variant={isCurrent ? "outline" : plan.id === "lifetime" ? "premium" : "accent"}
                   className="w-full"
-                  disabled={isCurrent || currentPlan === "lifetime"}
+                  disabled={isCurrent || currentPlan === "lifetime" || loadingPlan !== null}
                   onClick={() => handleUpgrade(plan.id)}
                 >
-                  {isCurrent ? "Current Plan" : isUpgrade ? "Upgrade" : "Downgrade"}
+                  {loadingPlan === plan.id ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                      Processing...
+                    </>
+                  ) : isCurrent ? (
+                    "Current Plan"
+                  ) : isUpgrade ? (
+                    "Upgrade"
+                  ) : (
+                    "Downgrade"
+                  )}
                 </Button>
               </CardFooter>
             </Card>
