@@ -11,6 +11,10 @@ const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
 const MAX_REQUESTS_PER_WINDOW = 5;
 
+// Input validation constants
+const MAX_TEXT_LENGTH = 10000;
+const MIN_TEXT_LENGTH = 10;
+
 function checkRateLimit(userId: string): boolean {
   const now = Date.now();
   const userLimit = rateLimitStore.get(userId);
@@ -28,15 +32,47 @@ function checkRateLimit(userId: string): boolean {
   return true;
 }
 
+// Sanitize input by removing control characters and trimming
+function sanitizeInput(input: string): string {
+  if (typeof input !== "string") return "";
+  // Remove control characters except newlines and tabs (keep formatting for notes)
+  return input.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "").trim();
+}
+
+// Validate text input
+function validateTextInput(value: unknown): { valid: boolean; error?: string; sanitized?: string } {
+  if (typeof value !== "string" || !value.trim()) {
+    return { valid: false, error: "Text content is required and must be a non-empty string" };
+  }
+  const sanitized = sanitizeInput(value);
+  if (sanitized.length < MIN_TEXT_LENGTH) {
+    return { valid: false, error: `Text must be at least ${MIN_TEXT_LENGTH} characters` };
+  }
+  if (sanitized.length > MAX_TEXT_LENGTH) {
+    return { valid: false, error: `Text must be ${MAX_TEXT_LENGTH} characters or less` };
+  }
+  return { valid: true, sanitized };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const { text } = await req.json();
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+    const body = await req.json();
+    const { text } = body;
+    
+    // Validate text input
+    const textValidation = validateTextInput(text);
+    if (!textValidation.valid) {
+      return new Response(JSON.stringify({ error: textValidation.error }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
+    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
     // Require authentication
@@ -83,11 +119,12 @@ serve(async (req) => {
       });
     }
 
+    // Use sanitized input in prompt
     const prompt = `Analyze this lecture/note content and provide:
 1. A clear, concise summary
 2. 5 MCQs based on the content
 
-Content: "${text}"
+Content: "${textValidation.sanitized}"
 
 Return JSON:
 {
@@ -128,7 +165,7 @@ Return ONLY valid JSON.`;
     return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error:", error);
     return new Response(JSON.stringify({ error: "An error occurred. Please try again." }), {
       status: 500,
