@@ -11,12 +11,18 @@ const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
 const MAX_REQUESTS_PER_WINDOW = 5;
 
+// Input validation constants
+const MAX_SUBJECT_LENGTH = 100;
+const MAX_TOPIC_LENGTH = 200;
+const MIN_COUNT = 1;
+const MAX_COUNT = 10;
+const VALID_DIFFICULTIES = ["easy", "medium", "hard"];
+
 function checkRateLimit(userId: string): boolean {
   const now = Date.now();
   const userLimit = rateLimitStore.get(userId);
   
   if (!userLimit || now > userLimit.resetTime) {
-    // Reset or initialize rate limit
     rateLimitStore.set(userId, { count: 1, resetTime: now + RATE_LIMIT_WINDOW_MS });
     return true;
   }
@@ -29,15 +35,74 @@ function checkRateLimit(userId: string): boolean {
   return true;
 }
 
+// Sanitize input by removing control characters and trimming
+function sanitizeInput(input: string): string {
+  if (typeof input !== "string") return "";
+  // Remove control characters except newlines and tabs
+  return input.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "").trim();
+}
+
+// Validate string input
+function validateStringInput(value: unknown, fieldName: string, maxLength: number): { valid: boolean; error?: string; sanitized?: string } {
+  if (typeof value !== "string" || !value.trim()) {
+    return { valid: false, error: `${fieldName} is required and must be a non-empty string` };
+  }
+  const sanitized = sanitizeInput(value);
+  if (sanitized.length > maxLength) {
+    return { valid: false, error: `${fieldName} must be ${maxLength} characters or less` };
+  }
+  if (sanitized.length === 0) {
+    return { valid: false, error: `${fieldName} cannot be empty after sanitization` };
+  }
+  return { valid: true, sanitized };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const { subject, topic, difficulty, count } = await req.json();
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+    const body = await req.json();
+    const { subject, topic, difficulty, count } = body;
+    
+    // Validate subject
+    const subjectValidation = validateStringInput(subject, "Subject", MAX_SUBJECT_LENGTH);
+    if (!subjectValidation.valid) {
+      return new Response(JSON.stringify({ error: subjectValidation.error }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    
+    // Validate topic
+    const topicValidation = validateStringInput(topic, "Topic", MAX_TOPIC_LENGTH);
+    if (!topicValidation.valid) {
+      return new Response(JSON.stringify({ error: topicValidation.error }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    
+    // Validate difficulty
+    const sanitizedDifficulty = typeof difficulty === "string" ? difficulty.toLowerCase().trim() : "";
+    if (!VALID_DIFFICULTIES.includes(sanitizedDifficulty)) {
+      return new Response(JSON.stringify({ error: `Difficulty must be one of: ${VALID_DIFFICULTIES.join(", ")}` }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    
+    // Validate count
+    const parsedCount = typeof count === "number" ? count : parseInt(count, 10);
+    if (isNaN(parsedCount) || parsedCount < MIN_COUNT || parsedCount > MAX_COUNT) {
+      return new Response(JSON.stringify({ error: `Count must be between ${MIN_COUNT} and ${MAX_COUNT}` }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
+    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
       throw new Error("LOVABLE_API_KEY is not configured");
     }
@@ -86,7 +151,8 @@ serve(async (req) => {
       });
     }
 
-    const prompt = `Generate ${count} multiple choice questions about ${topic} in ${subject}. Difficulty: ${difficulty}.
+    // Use sanitized inputs in prompt
+    const prompt = `Generate ${parsedCount} multiple choice questions about ${topicValidation.sanitized} in ${subjectValidation.sanitized}. Difficulty: ${sanitizedDifficulty}.
 
 Return a JSON array with this exact format:
 [
@@ -101,7 +167,7 @@ Return a JSON array with this exact format:
 Requirements:
 - Each question must have exactly 4 options
 - The answer must be the full text of the correct option
-- Make questions appropriate for ${difficulty} difficulty level
+- Make questions appropriate for ${sanitizedDifficulty} difficulty level
 - Questions should be educational and accurate
 - Return ONLY the JSON array, no other text`;
 
@@ -141,7 +207,7 @@ Requirements:
     return new Response(JSON.stringify({ mcqs }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error:", error);
     return new Response(JSON.stringify({ error: "An error occurred. Please try again." }), {
       status: 500,
